@@ -64,8 +64,10 @@ string RedisCommandHandler::processCommand(const string& commandLine) {
     auto tokens = parseRespCommand(commandLine);
     if (tokens.empty()) return "ERROR: Empty command\r\n";
 
+    cout << commandLine << "\n";
+    
     for (auto& t : tokens) {
-        cout << t << endl;
+        cout << t << "\n";
     }
     
     string cmd = tokens[0];
