@@ -12,13 +12,14 @@ int main(int argc, char* argv[]) {
     RedisServer server(port);
 
     // Background persistence -> dump the database every 300 seconds (5 * 60s save database to disk)
-    thread persistenceThread([]() {
+    thread persistanceThread([]() {
         while(true) {
             this_thread::sleep_for(chrono::seconds(300));
             // dump the database 
         }
     });
-    persistenceThread.detach();
+
+    persistanceThread.detach();
     server.run();
     
     return 0;

@@ -2,6 +2,9 @@
 #include <vector>
 #include <sstream>
 #include <algorithm>
+#include <iostream>
+
+using namespace std;
 
 // RESP parser 
 // *2\r\n$4\r\n\PING\r\n$4\r\nTEST\r\n
@@ -10,7 +13,7 @@
 // PING -> First element
 // TEST -> Second element
 
-vector<string> parseRESPCommand(const string &input) {
+vector<string> parseRespCommand(const string &input) {
     vector<string> tokens;
     if (input.empty()) return tokens;
 
@@ -47,6 +50,7 @@ vector<string> parseRESPCommand(const string &input) {
 
         if (pos + len > input.size()) break;
         string token = input.substr(pos, len);
+        //tokens.push_back(token);
         pos += len + 2; // skip token and CRLF
     }
 
@@ -60,6 +64,10 @@ string RedisCommandHandler::processCommand(const string& commandLine) {
     auto tokens = parseRespCommand(commandLine);
     if (tokens.empty()) return "ERROR: Empty command\r\n";
 
+    for (auto& t : tokens) {
+        cout << t << endl;
+    }
+    
     string cmd = tokens[0];
     transform(cmd.begin(), cmd.end(), cmd.begin(), ::toupper);
     ostringstream response;

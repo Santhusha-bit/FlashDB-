@@ -1,0 +1,319 @@
+Building FlashDB: A Redis Clone from Scratch in C++ (Part 1 — The TCP Server Skeleton)
+
+Title ideas:
+- Building a Redis Clone in C++: Starting with the Server Socket
+- FlashDB Part 1: How a Redis-like Server Opens a Port and Listens
+- From main() to listen(): The First Lines of a Redis Clone
+
+
+Introduction
+
+Redis is one of the most widely used in-memory data stores in the world. At a high level it looks simple: clients connect over TCP, send commands like SET and GET, and get responses back. Under the hood, that simplicity rests on a carefully designed networking layer.
+
+In this series I am building FlashDB, a Redis-inspired project written in C++, to learn how that layer actually works. This first article covers the foundation: parsing a port from the command line, constructing a server object, and opening a TCP listening socket.
+
+We are not storing keys yet. We are not speaking the Redis protocol yet. We are answering a more basic question: how does a process become a server that other programs can connect to?
+
+
+What we are building in this part
+
+By the end of this article, FlashDB has:
+
+1. A main entry point that accepts an optional port (default 6379, same as Redis).
+2. A RedisServer class that owns the listening socket and a running flag.
+3. Socket setup: create → configure → bind → listen.
+4. A startup log that prints which port the server is listening on.
+
+That is the skeleton every TCP server needs before it can accept clients.
+
+
+Project layout
+
+FlashDB uses a simple split between headers and sources:
+
+- include/RedisServer.h  — class declaration
+- src/RedisServer.cpp    — socket lifecycle implementation
+- src/main.cpp           — program entry point
+
+Keeping the interface in a header and the implementation in a .cpp file makes the design easier to grow as we add command parsing, a key-value store, and concurrency later.
+
+
+Step 1: main.cpp — starting the process
+
+The entry point is intentionally small:
+
+    #include "../include/RedisServer.h"
+    #include <iostream>
+    using namespace std;
+
+    int main(int argc, char* argv[]) {
+        int port = 6379; // default port
+        if (argc > 1) port = stoi(argv[1]);
+
+        RedisServer server(port);
+
+        return 0;
+    }
+
+What this does
+
+- argc and argv are the standard C/C++ way to read command-line arguments.
+  argv[0] is usually the program name; argv[1] is the first argument you type after it.
+- The default port is 6379, matching Redis, so familiar tooling and mental models transfer.
+- If the user passes a port, stoi() converts the string (for example "6380") into an integer.
+  stoi stands for "string to integer."
+- We construct a RedisServer with that port.
+
+Why this matters
+
+A server should be configurable without recompiling. Port selection at startup is the first piece of that flexibility. Later we will call server.run() from main so the process actually starts listening instead of exiting immediately after construction.
+
+
+Step 2: RedisServer.h — the class contract
+
+The header defines what a RedisServer is allowed to do and what state it keeps:
+
+    #ifndef REDIS_SERVER_H
+    #define REDIS_SERVER_H
+
+    #include <string>
+    #include <atomic>
+
+    class RedisServer {
+        public:
+            RedisServer(int port);
+            void run();
+            void shutdown();
+
+        private:
+            int port;
+            int server_socket;
+            atomic<bool> running;
+    };
+
+    #endif
+
+Design notes
+
+- Include guards (#ifndef / #define / #endif) prevent the header from being processed twice if multiple files include it.
+- The public API is small: construct, run, shutdown. That keeps the surface area clear for readers and for future contributors.
+- port stores which TCP port we bind to.
+- server_socket holds the file descriptor for the listening socket (-1 means "not open yet").
+- running is an atomic<bool> so that one thread can signal shutdown while another is blocked in accept() or processing clients. Even if we are single-threaded today, this anticipates graceful shutdown and multi-connection handling.
+
+This is classic encapsulation: callers do not touch sockets directly; they ask the server to run or shut down.
+
+
+Step 3: Constructor and shutdown
+
+In RedisServer.cpp:
+
+    static RedisServer* globalServer = nullptr;
+
+    RedisServer::RedisServer(int port) : port(port), server_socket(-1), running(true) {
+        globalServer = this;
+    }
+
+    void RedisServer::shutdown() {
+        running = false;
+        if (server_socket != -1) {
+            close(server_socket);
+            server_socket = -1;
+        }
+        cout << "Redis Server Shutdown Successfully!\n";
+    }
+
+Constructor
+
+The initializer list sets:
+- port from the argument,
+- server_socket to -1 (invalid / not created),
+- running to true.
+
+globalServer is a static pointer to the current server instance. Pattern-wise this is useful for a signal handler (for example SIGINT on Ctrl+C) that needs to call shutdown() without having a RedisServer reference in scope. Signal handlers are a common reason Redis-like servers keep a process-wide pointer to the active instance.
+
+shutdown()
+
+Graceful shutdown should:
+1. Flip running so the accept loop knows to stop.
+2. Close the listening socket if it is open.
+3. Reset server_socket to -1 so we do not double-close.
+4. Log success.
+
+Closing the listening socket is important: if a thread is blocked in accept(), closing the fd can unblock it so the process can exit cleanly.
+
+
+Step 4: run() — create, configure, bind, listen
+
+This is the heart of Part 1. In Unix-like networking, turning a process into a TCP server is a fixed sequence of system calls.
+
+Here is the full run() method as it stands:
+
+    void RedisServer::run() {
+        server_socket = socket(AF_INET, SOCK_STREAM, 0);
+        if (server_socket < 0) {
+            cerr << "Failed to create server socket!\n";
+            return;
+        }
+
+        int opt = 1;
+        setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+        sockaddr_in serverAddr{};
+        serverAddr.sin_family = AF_INET;
+        serverAddr.sin_port = htons(port);
+        serverAddr.sin_addr.s_addr = INADDR_ANY;
+
+        if (bind(server_socket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+            cerr << "Failed to bind server socket!\n";
+            return;
+        }
+
+        if (listen(server_socket, 10) < 0) {
+            cerr << "Failed to listen on server socket!\n";
+            return;
+        }
+
+        cout << "Redis Server Listening on port " << port << "\n";
+    }
+
+4a. Create the socket
+
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket < 0) {
+        cerr << "Failed to create server socket!\n";
+        return;
+    }
+
+- AF_INET means IPv4.
+- SOCK_STREAM means TCP (reliable, ordered byte streams), as opposed to SOCK_DGRAM for UDP.
+- The third argument 0 lets the OS pick the default protocol for that pair (TCP).
+
+On success, socket() returns a file descriptor: an integer the kernel uses to identify this endpoint. On failure it returns a negative value.
+
+4b. Allow address reuse
+
+    int opt = 1;
+    setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+Without SO_REUSEADDR, restarting the server quickly after a crash or Ctrl+C can fail with "Address already in use" because the previous socket may still be in TIME_WAIT. This option is nearly universal in server tutorials and production code for that reason.
+
+4c. Fill in the address structure
+
+    sockaddr_in serverAddr{};
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+
+- sockaddr_in describes an IPv4 socket address.
+- Zero-initializing with {} avoids leftover garbage in unused fields.
+- sin_family must match AF_INET.
+- htons(port) converts the port to network byte order (big-endian). Hosts and networks can disagree on endianness; htons ("host to network short") is the portable fix.
+- INADDR_ANY means "listen on all local interfaces" (0.0.0.0), not just localhost. That is what you want for a database server clients can reach from other machines (with firewall rules considered separately).
+
+Tip: keep one consistent name for the address variable (serverAddr or server_addr) everywhere — declare it once and use that same name in bind().
+
+4d. Bind the socket to the port
+
+    if (bind(server_socket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+        cerr << "Failed to bind server socket!\n";
+        return;
+    }
+
+bind() attaches the socket to the address and port. Until bind succeeds, the OS has not reserved that port for you. Failures here usually mean the port is taken or you lack permission (ports below 1024 often need elevated privileges on Unix).
+
+The cast to struct sockaddr* is required because the API is generic across address families; sockaddr_in is the IPv4-specific layout.
+
+4e. Listen for connections — and log the port
+
+    if (listen(server_socket, 10) < 0) {
+        cerr << "Failed to listen on server socket!\n";
+        return;
+    }
+
+    cout << "Redis Server Listening on port " << port << "\n";
+
+listen() marks the socket as passive: it will accept incoming connection requests. The second argument (10 here) is the backlog — how many pending connections the kernel may queue before clients start getting refusals.
+
+On success we print the port. That small log matters more than it looks:
+- You immediately know which port is live (especially if you overrode 6379 from the CLI).
+- It confirms listen() succeeded, not just that the process started.
+- During debugging, "Listening on port 6380" is faster feedback than guessing whether bind worked.
+
+Error paths should print a failure message on cerr and return. Success paths should print a clear success message on cout. Mixing those up makes production logs hard to trust.
+
+At this point the server is "up" in the networking sense. The next articles will add accept() in a loop, read bytes from clients, parse Redis protocol (RESP), and execute commands against an in-memory store.
+
+
+Headers used for networking
+
+On Linux / Unix-style environments, the implementation pulls in:
+
+- <sys/socket.h>  — socket, setsockopt, bind, listen
+- <netinet/in.h>  — sockaddr_in, AF_INET, htons, INADDR_ANY
+- <unistd.h>      — close()
+
+Windows uses a different API (Winsock). FlashDB’s current socket code follows the POSIX model, which is what most Redis learning material and Docker/Linux deployments assume.
+
+
+Mental model: the four calls
+
+If you remember nothing else from this article, remember this pipeline:
+
+    socket()  →  create an endpoint
+    setsockopt()  →  tune behavior (reuse address)
+    bind()  →  claim IP + port
+    listen()  →  start accepting a queue of clients
+    log port  →  confirm the server is ready
+
+Everything Redis does for clients — SET, GET, PUBLISH, MULTI — rides on top of connections that begin with this sequence.
+
+
+How this maps to real Redis
+
+Official Redis is far more sophisticated (event loops, multiplexing, persistence, replication). But the first mile is the same idea: a process owns a listening TCP socket on a configurable port and waits for clients.
+
+FlashDB is deliberately starting thin so each concept can be learned in isolation before complexity compounds.
+
+
+What is intentionally not done yet
+
+Honest scope for Part 1:
+
+- main constructs RedisServer but does not yet call run(), so the listening path is implemented but not started from main.
+- We do not call accept() yet, so no client connections are handled.
+- There is no key-value map, no RESP parser, no persistence.
+- Signal handling via globalServer is prepared but not wired (no signal() / sigaction yet).
+
+That is fine. Shipping a clear skeleton beats a half-finished monolith. Each missing piece becomes its own article.
+
+
+Suggested next steps (future Medium parts)
+
+1. Call server.run() from main and keep the process alive.
+2. Add an accept() loop to take incoming connections.
+3. Read raw bytes from a client and echo them (prove the connection works).
+4. Implement a minimal RESP parser for simple commands.
+5. Add an in-memory std::unordered_map for SET / GET.
+6. Handle multiple clients (threads or an event-driven loop).
+7. Add graceful Ctrl+C shutdown using the globalServer pointer.
+
+
+Conclusion
+
+FlashDB Part 1 is about becoming a TCP server, not about being Redis yet. We parse a port, encapsulate server state in a class, and walk through socket → reuse → bind → listen, then log the active port.
+
+If you are learning systems programming, this is one of the highest-leverage sequences you can memorize. Every chat server, every game lobby, every database that speaks over the network starts here.
+
+In the next part, we will call run() from main, keep the process alive, accept a connection, and take the first step toward speaking Redis’s language.
+
+
+---
+Author notes for publishing on Medium
+
+- Tag ideas: C++, Redis, Systems Programming, Networking, Backend, Open Source Learning
+- Add a simple diagram: Client → TCP → FlashDB (listen socket) → (future) command handler → store
+- Optionally include a screenshot of the project folder tree
+- Call out that readers on Windows may need WSL or Winsock adaptations for the POSIX socket APIs shown
+- Tone: build-in-public / learning journal; invite comments on design choices (threads vs event loop for later parts)
+- Mention the startup log line as a small but useful observability habit early in the project

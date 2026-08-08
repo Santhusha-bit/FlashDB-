@@ -1,8 +1,28 @@
 #include "../include/RedisServer.h"
+#include "../include/RedisCommandHandler.h"
+
 #include <iostream>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <netinet/in.h>
+#ifdef _WIN32
+
+    // -------------------------
+    // Windows
+    // -------------------------
+    // Windows uses Winsock instead of POSIX sockets.
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+
+#else
+
+    // -------------------------
+    // Linux / macOS
+    // -------------------------
+    // Both Linux and macOS use POSIX socket APIs.
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <arpa/inet.h>
+    #include <unistd.h>
+
+#endif  // _WIN32
 
 using namespace std;
 
@@ -45,4 +65,35 @@ void RedisServer::run() {
     
     cout << "Redis Server Listening on port " << port << "\n";
 
+    vector<thread> threads;
+    RedisCommandHandler cmdHandler;
+
+    while (running) {
+        int client_socket = accept(server_socket, nullptr, nullptr);
+        if (client_socket < 0) {
+            if (running) 
+                cerr << "Error accepting client connection!\n";
+            break;
+        }
+
+        threads.emplace_back([client_socket, &cmdHandler]() {
+            char buffer[1024];
+            while (true) {
+                memset(buffer, 0, sizeof(buffer));
+                int bytes  = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+                if (bytes <= 0) break;
+                string request(buffer, bytes);
+                string response = cmdHandler.processCommand(request);
+                send(client_socket, response.c_str(), response.size(), 0);
+            }
+            close(client_socket);
+        });
+
+        for (auto& thread : threads) {
+            if (t.joinable()) t.join();
+        }
+
+        // Shutdown
+        
+    }
 }

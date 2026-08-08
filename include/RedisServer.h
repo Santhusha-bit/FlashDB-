@@ -1,7 +1,6 @@
 #ifndef REDIS_SERVER_H
 #define REDIS_SERVER_H
 
-#include <string>
 #include <atomic>
 
 class RedisServer {
@@ -9,11 +8,11 @@ class RedisServer {
         RedisServer(int port);
         void run();
         void shutdown();
-        
+
     private:
         int port;
         int server_socket;
-        atomic<bool> running;
+        std::atomic<bool> running;
 };
 
-#endif 
+#endif
