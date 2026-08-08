@@ -1,29 +1,19 @@
 #include "../include/RedisServer.h"
 #include "../include/RedisCommandHandler.h"
-
 #include <iostream>
+#include <vector>
+#include <thread>
+#include <cstring>
+#include <string>
 #ifdef _WIN32
-
-    // -------------------------
-    // Windows
-    // -------------------------
-    // Windows uses Winsock instead of POSIX sockets.
     #include <winsock2.h>
     #include <ws2tcpip.h>
-
 #else
-
-    // -------------------------
-    // Linux / macOS
-    // -------------------------
-    // Both Linux and macOS use POSIX socket APIs.
     #include <sys/socket.h>
     #include <netinet/in.h>
     #include <arpa/inet.h>
     #include <unistd.h>
-
 #endif  // _WIN32
-
 using namespace std;
 
 static RedisServer* globalServer = nullptr;
@@ -47,22 +37,25 @@ void RedisServer::run() {
         cerr << "Failed to create server socket!\n";
         return;
     }
+
     int opt = 1;
     setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    sockaddr_in server_addr;
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(port);
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(server_socket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+    sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         cerr << "Failed to bind server socket!\n";
         return;
     }
+
     if (listen(server_socket, 10) < 0) {
         cerr << "Redis Server Started Successfully!\n";
         return;
     }
-    
+
     cout << "Redis Server Listening on port " << port << "\n";
 
     vector<thread> threads;
@@ -71,7 +64,7 @@ void RedisServer::run() {
     while (running) {
         int client_socket = accept(server_socket, nullptr, nullptr);
         if (client_socket < 0) {
-            if (running) 
+            if (running)
                 cerr << "Error accepting client connection!\n";
             break;
         }
@@ -80,7 +73,7 @@ void RedisServer::run() {
             char buffer[1024];
             while (true) {
                 memset(buffer, 0, sizeof(buffer));
-                int bytes  = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+                int bytes = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
                 if (bytes <= 0) break;
                 string request(buffer, bytes);
                 string response = cmdHandler.processCommand(request);
@@ -88,12 +81,9 @@ void RedisServer::run() {
             }
             close(client_socket);
         });
+    }
 
-        for (auto& thread : threads) {
-            if (t.joinable()) t.join();
-        }
-
-        // Shutdown
-        
+    for (auto& th : threads) {
+        if (th.joinable()) th.join();
     }
 }

@@ -2,6 +2,7 @@
 #define REDIS_COMMAND_HANDLER_H
 
 #include <string>
+using namespace std;
 
 class RedisCommandHandler {
     public:
